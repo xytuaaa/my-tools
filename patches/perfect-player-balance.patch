@@ -1,0 +1,517 @@
+diff --git a/assets/js/hupu/script-05-2678-qlg35lrc-upload-1783494754597-24.js b/assets/js/hupu/script-05-2678-qlg35lrc-upload-1783494754597-24.js
+index 7d49afa..20bc106 100644
+--- a/assets/js/hupu/script-05-2678-qlg35lrc-upload-1783494754597-24.js
++++ b/assets/js/hupu/script-05-2678-qlg35lrc-upload-1783494754597-24.js
+@@ -14,7 +14,19 @@ const SIM_CONFIG = {
+     TOTAL_ATTRS: 13,
+ 
+     /** Classic 模式重roll次数 */
+-    CLASSIC_REROLLS: 3,
++    CLASSIC_REROLLS: 18,
++
++    /** 静态发布版广告补充次数；0 表示关闭广告补充 */
++    MOCK_AD_REROLLS: 0,
++
++    /** 每轮展示的球员数 */
++    PLAYERS_PER_DRAW: 5,
++
++    /** 历史球员彩蛋进入本轮卡池的概率 */
++    HISTORICAL_SURPRISE_DRAW_CHANCE: 0.50,
++
++    /** 跨位置最多损失 5% 属性；原公式低于 95% 时按 95% 计算 */
++    MAX_CROSS_POSITION_LOSS: 0.05,
+ 
+     /** 每支球队 roster 展示上限（不够的用实际人数） */
+     ROSTER_SHOW_MAX: 15,
+@@ -139,10 +151,18 @@ const SIM_CONFIG = {
+     QUARTER_MINUTES: 12,
+ 
+     /** 模拟速度（毫秒/场） */
+-    SIM_SPEED_FAST: 50,
++    SIM_SPEED_FAST: 100,
+     SIM_SPEED_NORMAL: 800,
+     SIM_SPEED_DETAIL: 2500,
+ 
++    /** 主场进攻效率加成 */
++    HOME_ADVANTAGE_EFFICIENCY: 0.05,
++
++    /** 单队单场得分正态波动 */
++    SCORE_VARIANCE: 3.2,
++    SCORE_VARIANCE_MIN: 2.0,
++    SCORE_VARIANCE_MAX: 6.5,
++
+     /** 季后赛晋级条件（胜场数） */
+     PLAYOFF_WIN_REQUIRED: 4,
+   },
+@@ -192,8 +212,46 @@ const SIM_CONFIG = {
+     BUZZER_BEATER_CHANCE: 0.05,
+   },
+ 
++  /** 当前生效的赛季剧情频率 */
++  NARRATIVE: {
++    CHANCE_PERCENT: 10,
++    COOLDOWN_GAMES: 7,
++    MAX_PER_SEASON: 2,
++    MAX_WITH_RELATIONSHIP: 2,
++    OPENING_GAMES: 12,
++    NO_REPEAT_CAREER: true,
++  },
++
++  /** 当前生效的伤病平衡：概率减半、时长缩短 25% */
++  INJURY_BALANCE: {
++    RATE_MULTIPLIER: 0.50,
++    MAJOR_RATE_MULTIPLIER: 0.50,
++    DURATION_MULTIPLIER: 0.75,
++    REGULAR_EVENT_MAX: 2,
++    PLAYOFF_EVENT_MAX: 1,
++    COOLDOWN_GAMES: 12,
++  },
++
++  /** 休赛期可选事件数量；强制剧情节点仍可额外出现 */
++  OFFSEASON: {
++    MAIN_EVENTS: 0,
++    TRAINING_EVENTS: 2,
++  },
++
++  /** 生涯与训练成长 */
++  CAREER: {
++    MAX_AGE: 45,
++    TRAINING_POINTS_MULTIPLIER: 1.50,
++    MIN_TRAINING_POINTS: 2,
++    MAX_TRAINING_ADD_PER_ATTRIBUTE: 8,
++  },
++
+   /** 你的球员数据生成系数 */
+   PLAYER_STATS: {
++    /** 发布版个人正向数据倍率：得分产量及篮板/助攻/抢断/盖帽约提高 15% */
++    OUTPUT_MULTIPLIER: 1.15,
++    MAX_FGA: 36,
++
+     /** 各位置球权占比 */
+     USAGE: { PG: 0.18, SG: 0.17, SF: 0.16, PF: 0.14, C: 0.15 },
+ 
+@@ -331,7 +389,12 @@ const SIM_CONFIG = {
+   },
+ };
+ 
+-// 确保 SIM_CONFIG 全局可用
++// 供发布后在浏览器控制台读取，后续调参时无需翻查业务代码
++if (typeof window !== 'undefined') {
++  window.SIM_CONFIG = SIM_CONFIG;
++}
++
++// 供 Node.js 测试与工具读取
+ if (typeof module !== 'undefined' && module.exports) {
+   module.exports = SIM_CONFIG;
+ }
+diff --git a/nba-perfect-player.html b/nba-perfect-player.html
+index ba2e536..2edb111 100644
+--- a/nba-perfect-player.html
++++ b/nba-perfect-player.html
+@@ -2329,8 +2329,8 @@ const STATE = {
+   currentTeam: null,    // 'LAL'
+   currentRoster: [],    // 该队球员列表
+   _shownThisTeam: [],   // 当前球队已展示过的球员名
+-  _rerollsLeft: 3,    // 全局还可换球员次数（整个建球员阶段共3次，不重置）
+-  _mockAdRerollsLeft: 3, // 暂代广告奖励：最多看3次，每次直接换一批
++  _rerollsLeft: SIM_CONFIG.BUILD.CLASSIC_REROLLS, // 全局还可换球员次数（整个建球员阶段不重置）
++  _mockAdRerollsLeft: SIM_CONFIG.BUILD.MOCK_AD_REROLLS, // 静态发布版广告补充次数
+   _teamsVisited: [],  // 抽到过的球队列表
+   _drawPlayers: [],   // 当前这一轮展示的5名球员（同轮不重复）
+   
+@@ -2508,7 +2508,9 @@ function getPosPenalty(userPos, srcPos, attrKey) {
+   const srcAvg = SIM_CONFIG.POS_AVG[srcPos] && SIM_CONFIG.POS_AVG[srcPos][attrKey];
+   const userAvg = SIM_CONFIG.POS_AVG[userPos] && SIM_CONFIG.POS_AVG[userPos][attrKey];
+   if (!srcAvg || srcAvg <= 0) return 1.0;
+-  return Math.min(1.0, userAvg / srcAvg);
++  const originalPenalty = Math.min(1.0, userAvg / srcAvg);
++  const maxLoss = Math.max(0, Math.min(1, Number(SIM_CONFIG.BUILD.MAX_CROSS_POSITION_LOSS) || 0));
++  return Math.max(1 - maxLoss, originalPenalty);
+ }
+ 
+ /** 从球员的 pos 字段提取主位置（'PG / SG' → 'PG'） */
+@@ -2623,7 +2625,10 @@ function initGame() {
+     usedPlayers: [], _mustLockAfterSpin: false,
+     buildStep: 'select', noPlayerSelected: true,
+     currentTeam: null, currentRoster: [],
+-    _shownThisTeam: [], _rerollsLeft: 3, _mockAdRerollsLeft: 3, _teamsVisited: [], _drawPlayers: [],
++    _shownThisTeam: [],
++    _rerollsLeft: SIM_CONFIG.BUILD.CLASSIC_REROLLS,
++    _mockAdRerollsLeft: SIM_CONFIG.BUILD.MOCK_AD_REROLLS,
++    _teamsVisited: [], _drawPlayers: [],
+     selectedPlayer: null, _locking: false,
+     finalOVR: 0, finalPosition: null, finalArchetype: null,
+     careerTeam: null,
+@@ -2666,7 +2671,7 @@ function initGame() {
+ // ==================== 玩法说明弹窗 ====================
+ var _helpPage = 0;
+ var _helpPages = [
+-  { title: '建球员', content: '选择我的位置后进入抽签选队，随机抽取球队后从该队球员列表中选一人，点击左侧属性槽锁定一项属性。锁定后自动进入下一轮，可继续抽新球队选人锁属性。每局限换三次球员，用完只能重新随机球队。跨位置选人会触发属性衰减，集满十三项属性后自动揭晓总评、模板风格和相似球员。' },
++  { title: '建球员', content: '选择我的位置后进入抽签选队，随机抽取球队后从该队球员列表中选一人，点击左侧属性槽锁定一项属性。锁定后自动进入下一轮，可继续抽新球队选人锁属性。每局可更换十八次球员，用完只能重新随机球队。跨位置选人的属性损失最多为5%，集满十三项属性后自动揭晓总评、模板风格和相似球员。' },
+   { title: '赛季', content: '抽签决定我的生涯球队后进入赛季。系统根据我与队内同位置球员的总评比较判定首发或替补。每场比赛可点单场推进，也可点击日历日期批量模拟到当天。比赛数据根据属性和位置动态生成，方差较大，有爆发也有低迷。赛季中可随时点我的数据查看场均表现。' },
+   { title: '季后赛', content: '常规赛结束后根据排名决定季后赛或附加赛资格。附加赛在七到十名之间进行，逐场淘汰。季后赛每轮七场四胜，我的系列赛会一场一场模拟，每场生成简报。点击简报可展开查看详细比分、我的数据和全队数据。一路赢下去直到总冠军。' },
+   { title: '球员状态', content: '赛季与生涯中的压力、体力、士气、媒体关系、教练信任、球迷支持等状态会直接显示在页面上；事件选择会改变这些数值，并继续沿用原有比赛和生涯判定。' },
+@@ -2975,9 +2980,9 @@ function getRerollButtonHtml() {
+   }
+   var loading = !!window._adRerollLoading;
+   var canClick = hasTeam && !loading;
+-  var adLeft = Math.max(0, Number(STATE._mockAdRerollsLeft == null ? 3 : STATE._mockAdRerollsLeft));
++  var adLeft = Math.max(0, Number(STATE._mockAdRerollsLeft == null ? SIM_CONFIG.BUILD.MOCK_AD_REROLLS : STATE._mockAdRerollsLeft));
+   if (adLeft <= 0) {
+-    return '<button class="btn btn-sm slot-btn" disabled style="opacity:0.3;background:#222;color:var(--text-dim);">📺 广告重选已用完</button>';
++    return '<button class="btn btn-sm slot-btn" disabled style="opacity:0.3;background:#222;color:var(--text-dim);">更换次数已用完</button>';
+   }
+   return '<button class="btn btn-sm slot-btn" onclick="if(typeof watchAdToReroll===\'function\')watchAdToReroll()"' +
+     (canClick ? '' : ' disabled') +
+@@ -3137,8 +3142,8 @@ function getBuildHistoricalSurprisePool(team) {
+   return (window.PERFECT_PLAYER_HISTORICAL_SURPRISE_DATA && window.PERFECT_PLAYER_HISTORICAL_SURPRISE_DATA[team]) || [];
+ }
+ 
+-// 历史球员是低概率惊喜卡，不再像普通候选一样每轮固定出现。
+-const HISTORICAL_SURPRISE_DRAW_CHANCE = 0.20;
++// 历史球员按配置概率作为惊喜卡进入本轮候选池。
++const HISTORICAL_SURPRISE_DRAW_CHANCE = SIM_CONFIG.BUILD.HISTORICAL_SURPRISE_DRAW_CHANCE;
+ 
+ /** 从12名现役池抽一轮固定5张卡；最多插入1张巅峰惊喜卡。巅峰版与现役版视为不同卡。 */
+ function drawBuildPlayers(pool, count, team) {
+@@ -3166,7 +3171,7 @@ function showTeamRoster(team) {
+     return;
+   }
+ 
+-  const shown = drawBuildPlayers(players, 5, team);
++  const shown = drawBuildPlayers(players, SIM_CONFIG.BUILD.PLAYERS_PER_DRAW, team);
+   STATE._drawPlayers = shown;
+   
+   // 仅保留展示历史用于存档/调试，不参与下一轮抽取过滤，否则抽到第4轮会不足5人。
+@@ -3188,7 +3193,7 @@ function renderRosterPlayers(team, shown, allPool) {
+     : '';
+   let listHtml = `<div style="display:flex;align-items:center;gap:6px;padding-bottom:4px;flex-wrap:wrap;">
+     <span style="font-size:13px;font-weight:700;font-family:var(--font-display);letter-spacing:1px;">${getTeamName(team)}</span>
+-    <span style="font-size:11px;color:var(--text-dim);">本轮抽取 ${shown.length} 人 · 同轮不重复 · 名人堂惊喜低概率出现</span>
++    <span style="font-size:11px;color:var(--text-dim);">本轮抽取 ${shown.length} 人 · 同轮不重复 · 名人堂惊喜概率 ${Math.round(SIM_CONFIG.BUILD.HISTORICAL_SURPRISE_DRAW_CHANCE * 100)}%</span>
+   </div>${arrivalHtml}<div class="br-roster-list" style="max-height:none;">`;
+   
+   shown.forEach((p, drawIndex) => {
+@@ -3240,7 +3245,7 @@ function rerollTeamPlayers() {
+   }
+   
+   STATE._rerollsLeft--;
+-  const shown = drawBuildPlayers(players, 5, STATE.currentTeam);
++  const shown = drawBuildPlayers(players, SIM_CONFIG.BUILD.PLAYERS_PER_DRAW, STATE.currentTeam);
+   STATE._drawPlayers = shown;
+   
+   shown.forEach(p => {
+@@ -4885,7 +4890,7 @@ function quickSimAllGames() {
+           var esEl = document.getElementById('eventStatusBar');
+           if (esEl) esEl.outerHTML = renderEventStatus();
+           gi++;
+-          setTimeout(simNextWithDelay, 120);
++          setTimeout(simNextWithDelay, SIM_CONFIG.SEASON.SIM_SPEED_FAST);
+         };
+         var runPlayedThroughRegularGame = function(severity) {
+           ev.injuryGamesLeft = Math.max(0, (ev.injuryGamesLeft || 0) - 1);
+@@ -4928,7 +4933,7 @@ function quickSimAllGames() {
+           var esH = document.getElementById('eventStatusBar');
+           if (esH) esH.outerHTML = renderEventStatus();
+           gi++;
+-          setTimeout(simNextWithDelay, 120);
++          setTimeout(simNextWithDelay, SIM_CONFIG.SEASON.SIM_SPEED_FAST);
+         };
+         if (skipReason === 'injury' && isKeyInjuredRegularGame(g, gi, games.length) && shouldOfferPlayThroughInjury('reg-' + (STATE.season.games.length + 1), true)) {
+           showPlayThroughInjuryModal({
+@@ -5013,13 +5018,13 @@ function quickSimAllGames() {
+ 
+       // ★ 如果有事件弹窗，先弹窗再继续
+       if (evData && typeof showEventModal === 'function') {
+-        showEventModal(evData, function() { setTimeout(simNextWithDelay, 120); });
++        showEventModal(evData, function() { setTimeout(simNextWithDelay, SIM_CONFIG.SEASON.SIM_SPEED_FAST); });
+       } else if (branchEv) {
+-        showSeasonBranchEvent(branchEv, function() { setTimeout(simNextWithDelay, 120); });
++        showSeasonBranchEvent(branchEv, function() { setTimeout(simNextWithDelay, SIM_CONFIG.SEASON.SIM_SPEED_FAST); });
+       } else {
+-        setTimeout(simNextWithDelay, 120);
++        setTimeout(simNextWithDelay, SIM_CONFIG.SEASON.SIM_SPEED_FAST);
+       }
+-    } catch(e) { console.error('[Sim] 第' + (gi + 1) + '场异常:', e); gi++; setTimeout(simNextWithDelay, 120); }
++    } catch(e) { console.error('[Sim] 第' + (gi + 1) + '场异常:', e); gi++; setTimeout(simNextWithDelay, SIM_CONFIG.SEASON.SIM_SPEED_FAST); }
+   }
+ 
+   simNextWithDelay();
+@@ -6147,8 +6152,9 @@ function simulate82StyleMatchup(teamA, teamB, options) {
+   var modA = options.neutralState ? { offense:0, defense:0, variance:0 } : getCareerTeamGameModifiers(teamA);
+   var modB = options.neutralState ? { offense:0, defense:0, variance:0 } : getCareerTeamGameModifiers(teamB);
+   var teamAHome = options.teamAHome !== false;
+-  var homeA = teamAHome ? 0.018 : 0;
+-  var homeB = teamAHome ? 0 : 0.018;
++  var homeAdvantage = Number(SIM_CONFIG.SEASON.HOME_ADVANTAGE_EFFICIENCY) || 0;
++  var homeA = teamAHome ? homeAdvantage : 0;
++  var homeB = teamAHome ? 0 : homeAdvantage;
+   var fatigueA = Number(options.fatigueA) || 0;
+   var fatigueB = Number(options.fatigueB) || 0;
+   var averageAthletic = ((Number(powerA.athletic) || 60) + (Number(powerB.athletic) || 60)) / 2;
+@@ -6165,8 +6171,11 @@ function simulate82StyleMatchup(teamA, teamB, options) {
+   var efficiencyB = 1.154 + edgeB * 0.0034 - depthEdge + homeB - fatigueB * 0.012 - seedPts / pace;
+   efficiencyA = Math.max(0.91, Math.min(1.36, efficiencyA));
+   efficiencyB = Math.max(0.91, Math.min(1.36, efficiencyB));
+-  var varianceA = Math.max(4.6, Math.min(10, 6.4 + modA.variance));
+-  var varianceB = Math.max(4.6, Math.min(10, 6.4 + modB.variance));
++  var scoreVariance = Number(SIM_CONFIG.SEASON.SCORE_VARIANCE) || 3.2;
++  var scoreVarianceMin = Number(SIM_CONFIG.SEASON.SCORE_VARIANCE_MIN) || 2.0;
++  var scoreVarianceMax = Number(SIM_CONFIG.SEASON.SCORE_VARIANCE_MAX) || 6.5;
++  var varianceA = Math.max(scoreVarianceMin, Math.min(scoreVarianceMax, scoreVariance + modA.variance));
++  var varianceB = Math.max(scoreVarianceMin, Math.min(scoreVarianceMax, scoreVariance + modB.variance));
+   var regulationA = Math.max(80, Math.min(155, Math.round(pace * efficiencyA + simGaussian(0, varianceA))));
+   var regulationB = Math.max(80, Math.min(155, Math.round(pace * efficiencyB + simGaussian(0, varianceB))));
+   var qScoresA = splitRegulationScore(regulationA);
+@@ -6496,6 +6505,7 @@ function syncUserStatsIntoBoxScore(gameResult, stats) {
+ /** 生成你的球员数据：分钟、球权、出手类型和每项数据分别由对应属性驱动。 */
+ function generatePlayerStatsNew(attrs, gameResult, isPlayoff) {
+   const pos = STATE.position || 'PG';
++  const outputMultiplier = Math.max(0.5, Math.min(2, Number(SIM_CONFIG.PLAYER_STATS.OUTPUT_MULTIPLIER) || 1));
+   const pace = Number(gameResult && gameResult.pace) || 99.4;
+   const mins = getPlayerRotationMinutes(attrs, pos, isPlayoff);
+   const minsFactor = mins / 48;
+@@ -6504,7 +6514,7 @@ function generatePlayerStatsNew(attrs, gameResult, isPlayoff) {
+   const posUsage = { PG:.005, SG:.012, SF:.004, PF:-.004, C:-.002 };
+   let usage = 0.10 + Math.pow(creation01, 1.24) * 0.27 + (posUsage[pos] || 0);
+   if (isPlayoff && creation01 > 0.62) usage += 0.01;
+-  usage = Math.max(0.10, Math.min(0.39, usage));
++  usage = Math.max(0.10, Math.min(0.43, usage * outputMultiplier));
+ 
+   const baseline = getSimulationPowerBaseline();
+   const opponentDefense = gameResult && gameResult.teamB && gameResult.teamB.power ? Number(gameResult.teamB.power.defense) : baseline.defense;
+@@ -6514,7 +6524,8 @@ function generatePlayerStatsNew(attrs, gameResult, isPlayoff) {
+   const aggression = Math.max(0.78, Math.min(1.12, 0.96 + (scoringAverage - 70) * 0.004));
+   const expectedFga = teamFGA * minsFactor * usage * aggression * (1 - defensePressure * 1.5);
+   const minimumFga = mins >= 12 ? 2 : 0;
+-  let fga = Math.max(minimumFga, Math.min(32, Math.round(simGaussian(expectedFga, Math.max(0.8, expectedFga * 0.10)))));
++  const maxFga = Math.max(20, Number(SIM_CONFIG.PLAYER_STATS.MAX_FGA) || 32);
++  let fga = Math.max(minimumFga, Math.min(maxFga, Math.round(simGaussian(expectedFga, Math.max(0.8, expectedFga * 0.10)))));
+ 
+   const baseDist = SIM_CONFIG.SHOT_DIST[pos] || SIM_CONFIG.SHOT_DIST.PG;
+   const finRating = (parseInt(attrs.FIN)||50) * 0.72 + (parseInt(attrs.DNK)||50) * 0.28;
+@@ -6559,10 +6570,10 @@ function generatePlayerStatsNew(attrs, gameResult, isPlayoff) {
+   const control = (parseInt(attrs.HAN)||50) * 0.58 + (parseInt(attrs.PAS)||50) * 0.27 + (parseInt(attrs.CLU)||50) * 0.15;
+   const tov36 = Math.max(0.45, Math.min(5.5, 0.65 + usage * 7.5 + ast36 * 0.14 - simSkill01(control) * 1.0 + defensePressure * 8));
+   const paceScale = pace / 99.4;
+-  const reb = samplePoisson(reb36 * mins / 36 * paceScale);
+-  const ast = samplePoisson(ast36 * mins / 36 * paceScale);
+-  const stl = samplePoisson(stl36 * mins / 36 * paceScale);
+-  const blk = samplePoisson(blk36 * mins / 36 * paceScale);
++  const reb = samplePoisson(reb36 * mins / 36 * paceScale * outputMultiplier);
++  const ast = samplePoisson(ast36 * mins / 36 * paceScale * outputMultiplier);
++  const stl = samplePoisson(stl36 * mins / 36 * paceScale * outputMultiplier);
++  const blk = samplePoisson(blk36 * mins / 36 * paceScale * outputMultiplier);
+   const tov = samplePoisson(tov36 * mins / 36 * paceScale);
+   const stats = { pts, reb, ast, stl, blk, tov, fgm, fga, ftm, fta, threeM, threeA, mins };
+   syncUserStatsIntoBoxScore(gameResult, stats);
+@@ -9631,7 +9642,7 @@ var ATTRIBUTE_AGING_GROUPS = {
+   hybrid: ['FIN', 'STR'],
+   skill: ['threePT', 'MID', 'HAN', 'PAS', 'CLU']
+ };
+-var PLAYER_CAREER_MAX_AGE = 42;
++var PLAYER_CAREER_MAX_AGE = SIM_CONFIG.CAREER.MAX_AGE;
+ 
+ function getAttributeAgingGroup(key) {
+   if (ATTRIBUTE_AGING_GROUPS.physical.indexOf(key) >= 0) return 'physical';
+@@ -9855,14 +9866,15 @@ function buildBranchEventQueue(phase, maxCount) {
+   return queue;
+ }
+ 
+-var OFFSEASON_MAX_MAIN_EVENTS = 2;
+-var OFFSEASON_MAX_TRAINING_EVENTS = 2;
++var OFFSEASON_MAX_MAIN_EVENTS = SIM_CONFIG.OFFSEASON.MAIN_EVENTS;
++var OFFSEASON_MAX_TRAINING_EVENTS = SIM_CONFIG.OFFSEASON.TRAINING_EVENTS;
+ 
+ function pickBranchEvents(pool, preferOngoing, count) {
+   var picked = [];
+   var remaining = (pool || []).slice();
+   var usedBranches = {};
+-  while (remaining.length && picked.length < (count || 1)) {
++  var limit = count == null ? 1 : Math.max(0, Number(count) || 0);
++  while (remaining.length && picked.length < limit) {
+     var candidates = remaining.filter(function(ev) { return !usedBranches[ev.branch]; });
+     if (!candidates.length) break;
+     var ev = pickBranchEvent(candidates, preferOngoing);
+@@ -10347,12 +10359,12 @@ function recordBranchChoice(ev, ch, msg, phase) {
+ }
+ 
+ var SEASON_BRANCH_EVENT_CONFIG = {
+-  chancePercent: 14,
+-  cooldownGames: 7,
+-  maxPerSeason: 5,
+-  maxWithRelationship: 5,
+-  openingGames: 12,
+-  noRepeatCareer: true
++  chancePercent: SIM_CONFIG.NARRATIVE.CHANCE_PERCENT,
++  cooldownGames: SIM_CONFIG.NARRATIVE.COOLDOWN_GAMES,
++  maxPerSeason: SIM_CONFIG.NARRATIVE.MAX_PER_SEASON,
++  maxWithRelationship: SIM_CONFIG.NARRATIVE.MAX_WITH_RELATIONSHIP,
++  openingGames: SIM_CONFIG.NARRATIVE.OPENING_GAMES,
++  noRepeatCareer: SIM_CONFIG.NARRATIVE.NO_REPEAT_CAREER
+ };
+ 
+ function isCareerEventRepeatable(event) {
+@@ -10609,8 +10621,7 @@ function checkSeasonBranchEvent(game, result, stats) {
+       }
+     }
+   }
+-  // 每个赛季第 4 场起保证出现一条随机日常，之后每季最多约 5 次；
+-  // 仍保留 14% 概率与 7 场冷却，降低全年弹窗总量但不改变事件间隔手感。
++  // 每个赛季第 4 场起保证出现一条随机日常；后续频率、冷却和上限均读取发布配置。
+   var openingEventDue = gamesPlayed >= 4
+     && gamesPlayed <= SEASON_BRANCH_EVENT_CONFIG.openingGames
+     && (c.branchSeasonEvents._count || 0) === 0;
+@@ -10948,7 +10959,7 @@ function continueOffseasonEvent() {
+   if (modal) modal.remove();
+   STATE._offseasonResultDone = null;
+   if (STATE.career && STATE.career.flags && STATE.career.flags.countdownDone) {
+-    // 告别剧情不再直接强制退役；玩家可按当前年龄与能力决定继续，直到 42 岁赛季。
++    // 告别剧情不再直接强制退役；玩家可按当前年龄与能力决定继续，直到配置的生涯上限。
+     STATE._retirementOfferPhase = 'pre-training';
+     showPlayerRetirementChoice();
+     return;
+@@ -15209,7 +15220,10 @@ function calcTrainingPoints() {
+   if (awardLabels.indexOf('总决赛MVP') >= 0) personalPts++;
+   if (awardLabels.indexOf('最佳新秀') >= 0) personalPts++;
+ 
+-  return Math.max(pts, personalPts) || 1;
++  var basePoints = Math.max(pts, personalPts) || 1;
++  var multiplier = Math.max(0.25, Number(SIM_CONFIG.CAREER.TRAINING_POINTS_MULTIPLIER) || 1);
++  var minimum = Math.max(1, Number(SIM_CONFIG.CAREER.MIN_TRAINING_POINTS) || 1);
++  return Math.max(minimum, Math.round(basePoints * multiplier));
+ }
+ 
+ function renderTrainingCamp() {
+@@ -15447,7 +15461,7 @@ function manualLoadGame(slot) {
+         Object.keys(STATE).forEach(function(k) { delete STATE[k]; });
+         Object.assign(STATE, snap.state);
+         // 旧存档没有模拟广告计数和当前抽取快照时，按新规则补齐默认值。
+-        if (STATE._mockAdRerollsLeft == null) STATE._mockAdRerollsLeft = 3;
++        if (STATE._mockAdRerollsLeft == null) STATE._mockAdRerollsLeft = SIM_CONFIG.BUILD.MOCK_AD_REROLLS;
+         if (!Array.isArray(STATE._drawPlayers)) STATE._drawPlayers = [];
+         if (STATE.season && STATE.season._processedDays && !(STATE.season._processedDays instanceof Set)) {
+           STATE.season._processedDays = new Set((Array.isArray(STATE.season._processedDays) ? STATE.season._processedDays : []).map(Number));
+@@ -15894,7 +15908,7 @@ function getAgeInfo(age) {
+   if (age <= 33) return { desc:'转型阶段 — 年龄与当前属性开始共同判定回落', penalty:'身体属性优先衰退，高位属性压力更大' };
+   if (age <= 36) return { desc:'老将阶段 — 身体项稳定回落，技术项也可能下降', penalty:'保养仅有概率减免 1 点，不再完全抵消衰退' };
+   if (age <= 39) return { desc:'高龄阶段 — 年龄与属性双重压力明显增强', penalty:'身体项每年回落约 2~4 点，技术项约 1~3 点' };
+-  return { desc:'生涯末期 — 最多可坚持到 42 岁赛季', penalty:'高位属性回落更快，保养只能缓冲、不能逆转年龄' };
++  return { desc:'生涯末期 — 最多可坚持到 ' + PLAYER_CAREER_MAX_AGE + ' 岁赛季', penalty:'高位属性回落更快，保养只能缓冲、不能逆转年龄' };
+ }
+ 
+ function renderTrainingAttrs(tp) {
+@@ -15961,7 +15975,8 @@ function getMaxAdd(alreadyAdded, totalPoints, curVal) {
+   if (remaining <= 0) return 0;
+   var possible = 0;
+   var value = curVal + alreadyAdded;
+-  while (possible + alreadyAdded < 8 && value < 99) {
++  var perAttributeMax = Math.max(1, Number(SIM_CONFIG.CAREER.MAX_TRAINING_ADD_PER_ATTRIBUTE) || 8);
++  while (possible + alreadyAdded < perAttributeMax && value < 99) {
+     var cost = getPointCost(value);
+     if (remaining < cost) break;
+     remaining -= cost;
+@@ -15975,7 +15990,8 @@ function addTrainingPoint(key) {
+   if (!STATE._tpPending) STATE._tpPending = {};
+   var added = STATE._tpPending[key] || 0;
+   var cur = STATE.attrs[key] || 50;
+-  if (added >= 8) return;
++  var perAttributeMax = Math.max(1, Number(SIM_CONFIG.CAREER.MAX_TRAINING_ADD_PER_ATTRIBUTE) || 8);
++  if (added >= perAttributeMax) return;
+   var tp = calcTrainingPoints();
+   var used = getPendingTrainingCost(STATE._tpPending);
+   var remaining = tp - used;
+@@ -16074,7 +16090,7 @@ function getPlayerRetirementRisk(age, attrs, ovr, context) {
+   age = Number(age) || 22;
+   if (age > PLAYER_CAREER_MAX_AGE) return 1;
+   if (age < 35) return 0;
+-  var baseByAge = { 35:0.03, 36:0.06, 37:0.11, 38:0.18, 39:0.28, 40:0.40, 41:0.55, 42:0.72 };
++  var baseByAge = { 35:0.03, 36:0.06, 37:0.11, 38:0.18, 39:0.28, 40:0.40, 41:0.55, 42:0.72, 43:0.82, 44:0.90, 45:0.96 };
+   var base = baseByAge[age] == null ? 0.03 : baseByAge[age];
+   var profile = getPlayerLongevityProfile(attrs, ovr, context);
+   var risk = base + (80 - profile.score) * 0.012;
+@@ -16118,7 +16134,7 @@ function showPlayerRetirementChoice() {
+   html += '<div class="team-picker-header"><span>职业生涯节点</span></div>';
+   html += '<div style="padding:14px;">';
+   html += '<div style="font-family:var(--font-display);font-size:18px;font-weight:800;color:var(--text);margin-bottom:8px;">是否宣布退役？</div>';
+-  html += '<div style="font-size:13px;color:var(--text-dim);line-height:1.65;margin-bottom:8px;">' + age + '岁，OVR ' + (STATE.finalOVR || 0) + '。' + (canPlayMore ? '年龄和当前能力共同触发了生涯节点；你仍可继续战斗，最晚打完 42 岁赛季。' : '你已经完成 42 岁赛季，这是职业生涯的硬性终点。') + '</div>';
++  html += '<div style="font-size:13px;color:var(--text-dim);line-height:1.65;margin-bottom:8px;">' + age + '岁，OVR ' + (STATE.finalOVR || 0) + '。' + (canPlayMore ? '年龄和当前能力共同触发了生涯节点；你仍可继续战斗，最晚打完 ' + PLAYER_CAREER_MAX_AGE + ' 岁赛季。' : '你已经完成 ' + PLAYER_CAREER_MAX_AGE + ' 岁赛季，这是职业生涯的硬性终点。') + '</div>';
+   html += '<div style="font-size:11px;color:var(--text-muted);line-height:1.55;margin-bottom:14px;">续航评分 ' + longevity.score + ' · 年龄退役风险 ' + riskPct + '% · 身体 ' + longevity.physical + ' / 技术 ' + longevity.skill + '</div>';
+   html += '<button class="btn btn-primary btn-sm" style="width:100%;margin-bottom:8px;" onclick="announcePlayerRetirement()">宣布退役</button>';
+   if (canPlayMore) {
+@@ -19329,7 +19345,7 @@ function evolveLeague() {
+         });
+         p.ovr = Math.round(newOvr);
+       }
+-      // 联盟球员同样按“年龄 × 当前能力”双判定；42 岁赛季结束后统一退役。
++      // 联盟球员同样按“年龄 × 当前能力”双判定；达到配置年龄上限后统一退役。
+       var retireChance = getLeagueRetirementChance(p, age);
+       if (rngNext() * 100 < retireChance) {
+         STATE._leagueChanges.retired.push({ name: p.cname || p.name, nameEN: p.name, ovr: p.ovr, team: t, age: age });
+@@ -20000,7 +20016,8 @@ function getAgeBasedInjuryRate() {
+ function getSeasonInjuryEventRate() {
+   var ev = STATE.season && STATE.season.events;
+   var bonus = ev && ev.injuryRiskBonus ? ev.injuryRiskBonus : 0;
+-  return Math.max(0, Math.min(12, getAgeBasedInjuryRate() + bonus));
++  var multiplier = Math.max(0, Number(SIM_CONFIG.INJURY_BALANCE.RATE_MULTIPLIER) || 0);
++  return Math.max(0, Math.min(12, getAgeBasedInjuryRate() + bonus) * multiplier);
+ }
+ 
+ function getMajorInjuryEventRate() {
+@@ -20012,7 +20029,8 @@ function getMajorInjuryEventRate() {
+   else if (age >= 26) base = 0.7;
+   var ev = STATE.season && STATE.season.events;
+   var bonus = ev && ev.injuryRiskBonus ? ev.injuryRiskBonus : 0;
+-  return Math.max(0.15, Math.min(3, base + bonus * 0.08));
++  var multiplier = Math.max(0, Number(SIM_CONFIG.INJURY_BALANCE.MAJOR_RATE_MULTIPLIER) || 0);
++  return Math.max(0.05, Math.min(3, base + bonus * 0.08) * multiplier);
+ }
+ 
+ function isInjuryEventDef(e) {
+@@ -20058,15 +20076,14 @@ function checkRandomEvents(game, result, stats) {
+   ev.triggeredIds = Array.isArray(ev.triggeredIds) ? ev.triggeredIds : [];
+   if (ev.suspensionGamesLeft > 0 || ev.injuryGamesLeft > 0) return null;
+ 
+-  // 常规赛最多触发 3 个伤病/冲突事件（原 2，配合 10 场冷却保持分散）
+-  if (!STATE.season.isPlayoffs && ev.storyTimeline.length >= 3) return null;
+-  // 季后赛最多触发 2 个伤病事件
+-  if (STATE.season.isPlayoffs && ev.playoffEventCount >= 2) return null;
++  // 伤病事件上限由发布配置控制。
++  if (!STATE.season.isPlayoffs && ev.storyTimeline.length >= SIM_CONFIG.INJURY_BALANCE.REGULAR_EVENT_MAX) return null;
++  if (STATE.season.isPlayoffs && ev.playoffEventCount >= SIM_CONFIG.INJURY_BALANCE.PLAYOFF_EVENT_MAX) return null;
+ 
+-  // 冷却检查：距上次事件至少间隔 10 场
++  // 冷却检查：距上次事件至少间隔配置场次
+   if (ev.lastTriggerGameNum != null) {
+     var gamesSince = STATE.season.games.length - ev.lastTriggerGameNum;
+-    if (gamesSince < 10) return null;
++    if (gamesSince < SIM_CONFIG.INJURY_BALANCE.COOLDOWN_GAMES) return null;
+   }
+ 
+   _lastGameCtx = { game: game, result: result, stats: stats };
+@@ -20101,6 +20118,10 @@ function checkRandomEvents(game, result, stats) {
+   if (picked) {
+       var d = picked.execute(ctx);
+       if (d) {
++        if (d._consequence === 'injury' && d._games) {
++          var durationMultiplier = Math.max(0.1, Number(SIM_CONFIG.INJURY_BALANCE.DURATION_MULTIPLIER) || 1);
++          d._games = Math.max(1, Math.round(d._games * durationMultiplier));
++        }
+         if (ev.triggeredIds.indexOf(picked.id) < 0) ev.triggeredIds.push(picked.id);
+         markCareerEventSeen(picked, STATE.career);
+         // Resolve event variables
+@@ -25276,11 +25297,11 @@ function openAdTeamPicker() {
+ 
+ var _adRerollLoading = false;      // 换人广告防连点
+ 
+-/** 更换球员用完时：暂用模拟广告，最多3次，完成后立即换一批5人 */
++/** 更换球员用完时：静态发布版按配置决定是否提供模拟广告补充 */
+ async function watchAdToReroll() {
+   if (_adRerollLoading) return;
+   if (!STATE.currentTeam) return;
+-  var adLeft = Math.max(0, Number(STATE._mockAdRerollsLeft == null ? 3 : STATE._mockAdRerollsLeft));
++  var adLeft = Math.max(0, Number(STATE._mockAdRerollsLeft == null ? SIM_CONFIG.BUILD.MOCK_AD_REROLLS : STATE._mockAdRerollsLeft));
+   if (adLeft <= 0) {
+     showAdToast('模拟广告次数已用完');
+     updateSlotButtons();
+
