@@ -1,0 +1,61 @@
+name: Publish NBA Perfect Player
+
+on:
+  push:
+    branches: [codex/nba-perfect-player-pages]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: nba-perfect-player-pages
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout publishing source
+        uses: actions/checkout@v4
+
+      - name: Fetch the pinned upstream game
+        run: |
+          git clone --filter=blob:none https://github.com/zyz9408/perfect-player.git upstream
+          git -C upstream checkout efca6764f4fec5b3b203f0e4b8a0681c50ac46e2
+          git -C upstream apply --whitespace=nowarn "$GITHUB_WORKSPACE/patches/perfect-player-balance.patch"
+
+      - name: Build the GitHub Pages site
+        run: node scripts/build-pages.mjs upstream _site
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Store generated files in the published branch
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          git -C _site init
+          git -C _site checkout -b published
+          git -C _site config user.name "github-actions[bot]"
+          git -C _site config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C _site add -- index.html nba-perfect-player.html assets .nojekyll
+          git -C _site commit -m "Publish NBA Perfect Player"
+          git -C _site remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C _site push --force origin published
